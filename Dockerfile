@@ -5,9 +5,10 @@ WORKDIR /app
 COPY ./requirements.txt /app/requirements.txt
 
 RUN pip install --no-cache-dir --upgrade -r /app/requirements.txt
-
+RUN apk add --no-cache curl
 
 COPY ./app /app
+WORKDIR /
 
 EXPOSE 3000
 

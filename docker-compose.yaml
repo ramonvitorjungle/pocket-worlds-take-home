@@ -1,42 +1,89 @@
+version: '3.8'
+
 services:
-#  web:
-#    build: .
-#    restart: unless-stopped
-#    ports:
-#      - "3000:3000"
-#    depends_on:
-#      - mongo
-#      - mongosetup
-#      - rabbitmq
-#      - rabbitmq_setup
+  web:
+    build: .
+    restart: unless-stopped
+    environment:
+      MONGO_URL: mongodb://mongo:27017/?replicaSet=rs0
+      RABBITMQ_HOST: rabbitmq
+      DATABASE: pocketworlds
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/health/" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    depends_on:
+      mongo:
+        condition: service_healthy
+  consumers:
+    build: .
+    restart: unless-stopped
+    command: [ "python", "-m",  "app.workers.queues_worker" ]
+    environment:
+      MONGO_URL: mongodb://mongo:27017/?replicaSet=rs0
+      RABBITMQ_HOST: rabbitmq
+      DATABASE: pocketworlds
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/health/" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      outbox:
+        condition: service_healthy
+  outbox:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m",  "app.workers.outbox_worker"]
+    environment:
+      MONGO_URL: mongodb://mongo:27017/?replicaSet=rs0
+      RABBITMQ_HOST: rabbitmq
+      DATABASE: pocketworlds
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    depends_on:
+      mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
   mongo:
     image: mongo:8.2
     restart: unless-stopped
     volumes:
       - ./mongodb_data:/data/db
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: "pocketworlds"
-      MONGO_INITDB_ROOT_PASSWORD: "takehome"
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
     ports:
       - "27017:27017"
-#  mongosetup:
-#    image: mongo:8.2
-#    restart: no
-#    depends_on:
-#      - mongo
-#  rabbitmq:
-#    image: rabbitmq:4-management-alpine
-#    restart: unless-stopped
-#    ports:
-#      - "5672:5672"
-#      - "15672:15672"
-#    volumes:
-#      - ./rabbit_config/definitions.json:/etc/rabbitmq/definitions.json
-#      - ./rabbitmq_data:/var/lib/rabbitmq
-#    environment:
-#      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbitmq_management load_definitions \"/etc/rabbitmq/definitions.json\""
-#  rabbitmq_setup:
-#    image: rabbitmq:4-management-alpine
-#    restart: no
-#    depends_on:
-#      - rabbitmq
+    healthcheck:
+      test: echo 'db.runCommand({serverStatus:1}).ok' | mongosh admin --quiet | grep 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    volumes:
+      - ./rabbitmq_data:/var/lib/rabbitmq

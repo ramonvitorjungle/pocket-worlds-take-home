@@ -1,22 +1,29 @@
 import uuid
+from dataclasses import asdict
 from typing import List
 
 from fastapi import HTTPException
 
+from app.config.db import transaction
 from app.dtos.create_world_dto import CreateWorldDto
 from app.dtos.update_world_dto import UpdateWorldDto
 from app.dtos.world_dto import WorldDto
 from app.factories.world_dto_factory import build_world_dto
+from app.models.message import Message
 from app.models.user import User
 from app.models.world import World
 from app.repositories import world_repository
+from app.repositories.message_repository import insert_message
 from app.repositories.world_repository import insert_world, find_world, find_all_worlds, find_worlds_with
 
 
 async def create_world(create_world_dto: CreateWorldDto, owner: User) -> WorldDto:
     _id = str(uuid.uuid4())
     world = World(name=create_world_dto.name, description=create_world_dto.description, owner_id=owner.id, _id=_id)
-    await insert_world(world)
+    async with transaction() as session:
+        message_about_creation = Message(queue_to_publish="world.created", message=asdict(world), _id=str(uuid.uuid4()))
+        await insert_world(world, session=session)
+        await insert_message(message_about_creation, session=session)
     return build_world_dto(world=world)
 
 
@@ -48,7 +55,10 @@ async def update_world(id: str, update_world_dto: UpdateWorldDto, owner: User) -
         world.name = update_world_dto.name
     if world.description is not None:
         world.description = update_world_dto.description
-    updated = await world_repository.update_world(world)
+    async with transaction() as session:
+        message_about_update = Message(queue_to_publish="world.updated", message=asdict(world), _id=str(uuid.uuid4()))
+        updated = await world_repository.update_world(world, session=session)
+        await insert_message(message_about_update, session=session)
     if not updated:
         raise HTTPException(status_code=500, detail="Could not update world")
     return build_world_dto(world=world)

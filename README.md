@@ -135,6 +135,116 @@ Unfortunately, it is not the best fit for this application, since we are not int
 
 This pattern is significantly more complex than the previous ones. It involves writing the message to the database, and then publishing it to a queue using a worker or a CDC mechanism.
 
-It burdens the database with the message reads and writes, increases the total latency when consuming the messages, but it offers robustness, no concurrency issues, at least once delivery, and a transactional guarantee.
+It burdens the database with the message reads and writes, increases the total latency when consuming the messages, but it offers robustness, no concurrency issues, at-least-once delivery, and a transactional guarantee.
 
 The implementation leverages a collection called `messages` and Mongo's flexible schema, with a worker polling the collection for new messages and publishing them to the queue.
+
+## Environment and Deployment
+
+I set up a docker-compose.yml that you can use to run the application. The trickiest part was to make sure that the database was ready before the application started.
+
+They all have healthchecks and restart on errors. The API is somewhat robust to the failure of the database. The workers might not be as robust, but since they are not client facing, they can be restarted safely.
+
+## Observability
+
+I started setting up open telemetry and prometheus on the application, but found it to be more involved than the time proposed in the shared document.
+
+I'll describe what would be the ideal setup and how I would go about it.
+
+For logging, I would use a log with the trace id, the timestamp, message, level, function or module that is calling and the line.
+
+This makes it way easier to search for a specific trace id and to debug issues quickly. Infrastructure-wise, Loki with Promtail and Grafana would be a good choice.
+
+For metrics, I would use Prometheus to expose the metrics. I'd have a Prometheus server that would scrape the metrics from the application every X seconds - X to be tuned for each application. 
+
+General metrics I can't live without:
+- Number of requests
+- Requests per second
+- Number of errors
+- Errors per status code family or groups - 5XX, 404, 403, 401, etc.
+- Latency
+- Number of connections to the database
+- Number of messages in the queue
+- Number of messages in the DLQ
+- Number of successfully processed messages
+- Number of failures to process a message
+- Number of times a message was delivered to the consumer
+- Number of pending messages in the database
+
+Tracing, I'd use something like Tempo. It enables distributed tracing, and it has a UI that can be used to visualize the traces along Grafana. The tracing view can go as deep as getting the payload a worker received, the query the database executed, which services are part of the request, etc.
+
+In the absence of a tracing system, I'd use a log with the trace id to fetch the payload or id of the message. Then, I'd find that in the logs for the worker that processed the message.
+
+## Fault Tolerance
+
+### Broker and Database failures
+If the broker goes down, the api will not fail to respond. The messages will be stored in the database and will be processed when the broker comes back. The outbox worker will likely be on crash loop, but it will be restarted automatically. So will the queue worker.
+
+If the database goes down, the api will fail with a 500 error. The outbox worker will likely crash and be on crash loop, but will be restarted until the database comes back. The queue worker will be idle waiting for messages.
+
+### Persistence errors
+Regarding persistence errors, ideally each API being used is idempotent so that we can retry. Depending on the error, we might want to retry only a few times, or start a circuit breaker. For instance, a 500 error might be a temporary error, so we might want to retry a few times before opening a circuit breaker. For a 401, no retry is needed and we can just consume the message.
+
+This is a great strategy for high throughput endpoints, to avoid the barraging of events after an internal failure.
+
+### Idempotency
+Regarding idempotency, in the current setup, each message has its own uuid. We can encapsulate the idempotency logic in a decorator, which goes to the database and checks if the message has already been processed. If it has, we can safely consume the message. If not, we can process it.
+
+The idea is to start a transaction, and then commit the transaction if the message was processed successfully. By the end of the transaction, we can store in the database that the message was processed. I'll try to implement this in the project
+
+## Scaling and Future Growth
+
+### Scaling the API and the database
+For scaling reads, the API can be scaled horizontally by adding more replicas, with a load balancer in front of them. MongoDB enables easy replication and it would be possible to implement a tiered caching mechanism, with a first layer of caching in the API and a second layer in a Redis cluster.
+
+This caching comes with its challenges and tradeoffs, but I've found that even a 5s in-memory cache in the API can greatly help with the performance.
+
+For scaling writes, MongoDB shards in an easier way than with PostgreSQL or MySQL. Though it has its challenges, such as sharding imbalaces and connection issues, it can be scaled horizontally by adding more shards - in a very simplistic summary.
+
+I believe that 10k QPS in a very read heavy scenario can be achieved with a single shard, a N nodes replica set, a Redis, load-balancing + horizontal scaling in the API, and an in-memory cache.
+
+For a 10k QPS in a very write heavy scenario, it would be possible to scale the database (the weak link here) by adding more shards - probably not the optimal way of doing it-, batching the writes with a queue or a stream - this would be my best bet.
+
+The inner parts of the application could scale horizontally by adding more replicas - should the application tolerate this, i.e., it does not require message ordering or alike. 
+
+The outbox worker could be rewritten in a different language, such as Go, to increase the throughput. Go would be a great candidate due to its ability to use multiple cores with ease. It would be possible to also partition the outbox worker by message type, so that it can be scaled independently.
+
+### On multi-region setups
+
+For a multi-region setup, I'd avoid it as much as possible due to one thing: egress. Egress is a b*tch. I'd start with a multi-AZ setup and should you need a multi-region setup, my recommendation would be to have an active-passive architecture.
+
+A small cluster in the secondary region with few replicas. A replicated read-only replica for the database - to be promoted should the primary region fails, a read-only replica for the message broker - same idea, and an easy, automated way to failover and scale the cluster should the primary region fails.
+
+A note on data loss budget: it is still possible to be behind the primary region due to replication lag. Some service offerings can be as much as 5 minutes behind the primary region.
+
+### Event replay and eventual consistency
+
+Using queues, event replay is possible but harder to do than in a streaming setup. We can always go to the database and fetch the messages sent, order them by timestamp, and replay them.
+
+This is not ideal, but it is possible if the consumers are idempotent. As for the eventual consistency challenges, should the workers update the database state in a meaningful way, we might face a few challenges.
+
+For instance, let's say we have a chat in-game where we persist every message, but we scan them for abuse. It would be ideal to have such abuse detection system on the request, but this is not always possible to implement.
+
+Oftentimes, we perform these heavy operations in the background and have the messages be passed along to the clients. Should something be detected, we can come back and filter the messages, requesting an update of the messages from the clients.
+
+For these issues, we have a few strategies that might work well:
+- If the time between reads takes X seconds and the whole async operation reliably takes less than X/2 seconds, we can safely bet that the system will not be impacted by the event lag.
+For instance, if players only check their inboxes every 10 seconds in a polling operation, and the whole async operation of collecting the messages takes less than 5 seconds, it would be as if the system was synchronous. There would be little to no impact on the user experience.
+- If the feature can be implemented in an async manner, we can "set the expectation" that the system will process this on the background. For example, AWS does this all the time. They just return a message like "We got your request, we will process it in the background and will let you know when it is done."
+This works nicely for features that absolutely need to be processed in the background, e.g. image processing.
+- Another possibility is using an optimistic client. The client simulates the result of the async operation as if it was successful, while it is waiting for the result. Since games oftentimes have animations, rituals, intros, etc., the client leverages this to wait for the result.
+Should the response be an error, the client can simply resync the state and show an error message to the user. Works well if the operations are extremely reliable.
+
+However, this is not always possible. Some features annoyingly take a long time to process. Unfortunately, there is no magical solution for these cases and you either compromise by accepting the eventual consistency with intermediate states to give some visibility, or you block the client until the operation is done.
+
+The greatest issue with eventual consistency happens when operations have requirements on the order of execution. In these cases, the best solution is to go with a SAGA pattern in a choreography or an orchestrator. I tend to go with the choreography pattern, since it is easier to implement.
+
+In these cases, the workers need to be idempotent, the events need to be in an outbox pattern to avoid message loss, and each service must have a mechanism to make the operation in a single transaction. Then, it is a matter of finding the order of execution, and implementing.
+
+The case I have to explain this in-depth relates to my current work, where we have visits, offers and contracts for buying houses.
+
+In this case, we need the visit to be DONE before someone can put an offer on it. Also, the contract needs an offer before it can be signed. For this particular flow - grossly simplified - we publish the DONE events to a queue, which then consumes and enables the offer to be created.
+
+As soon as the offer is created, it evolves in a state machine, eventually going into an ACCEPTED state. This then triggers the contract creation.
+
+There is ordering, there are multiple services, and there is a lot of state to manage. That's where the SAGA truly shines.
