@@ -1,0 +1,53 @@
+{
+  "users": [
+    {
+      "name": "user",
+      "password_hash": "password_hash_here",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": "administrator"
+    }
+  ],
+  "vhosts": [
+    {
+      "name": "/"
+    }
+  ],
+  "queues": [
+    {
+      "name": "my_queue_1",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "my_queue_2",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 60000
+      }
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "my_exchange",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    {
+      "source": "my_exchange",
+      "vhost": "/",
+      "destination": "my_queue_1",
+      "destination_type": "queue",
+      "routing_key": "my_routing_key_1",
+      "arguments": {}
+    }
+  ]
+}

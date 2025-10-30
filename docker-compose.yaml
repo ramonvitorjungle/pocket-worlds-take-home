@@ -1,0 +1,42 @@
+services:
+#  web:
+#    build: .
+#    restart: unless-stopped
+#    ports:
+#      - "3000:3000"
+#    depends_on:
+#      - mongo
+#      - mongosetup
+#      - rabbitmq
+#      - rabbitmq_setup
+  mongo:
+    image: mongo:8.2
+    restart: unless-stopped
+    volumes:
+      - ./mongodb_data:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: "pocketworlds"
+      MONGO_INITDB_ROOT_PASSWORD: "takehome"
+    ports:
+      - "27017:27017"
+#  mongosetup:
+#    image: mongo:8.2
+#    restart: no
+#    depends_on:
+#      - mongo
+#  rabbitmq:
+#    image: rabbitmq:4-management-alpine
+#    restart: unless-stopped
+#    ports:
+#      - "5672:5672"
+#      - "15672:15672"
+#    volumes:
+#      - ./rabbit_config/definitions.json:/etc/rabbitmq/definitions.json
+#      - ./rabbitmq_data:/var/lib/rabbitmq
+#    environment:
+#      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbitmq_management load_definitions \"/etc/rabbitmq/definitions.json\""
+#  rabbitmq_setup:
+#    image: rabbitmq:4-management-alpine
+#    restart: no
+#    depends_on:
+#      - rabbitmq
