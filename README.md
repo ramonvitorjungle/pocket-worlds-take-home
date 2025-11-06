@@ -1,5 +1,14 @@
 # Ramon's PocketWorlds Take-Home
 
+## How to run the application
+
+It should be straightforward to run the application:
+
+```bash
+docker compose build --no-cache
+docker compose up
+```
+
 ## On the Database choice
 
 There are several great options for the database. I'll highlight a few candidates I considered and why I chose MongoDB.
